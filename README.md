@@ -1,7 +1,7 @@
-NmaptoCSV
+Nmap-files-to-csv
 ============
 
-Modification from the original repo
+Ardya's Modification from the original repo
 -----------
 - Add feature to process all gnmap in the current working directory.
 - Add additional field
