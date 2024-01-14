@@ -22,6 +22,7 @@
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
+import os
 
 # Global imports
 import sys
@@ -38,13 +39,15 @@ if (sys.version_info < (3, 0)):
     izip = itertools.izip
     fd_read_options = 'rb'
     fd_write_options = 'wb'
+    fd_append_options = 'ab'
 else:
     izip = zip
     fd_read_options = 'r'
     fd_write_options = 'w'
+    fd_append_options = 'a'
 
 # Script version
-VERSION = '1.6'
+VERSION = '1.0'
 
 # Options definition
 parser = argparse.ArgumentParser()
@@ -53,6 +56,7 @@ parser = argparse.ArgumentParser()
 mandatory_grp = parser.add_argument_group('Mandatory parameters')
 mandatory_grp.add_argument('-i', '--input', help = 'Nmap scan output file in normal (-oN) or Grepable (-oG) format (stdin if not specified)')
 mandatory_grp.add_argument('-x', '--xml-input', help = 'Nmap scan output file in XML (-oX) format')
+mandatory_grp.add_argument('-a', '--all-files', help = 'Process all gnmap files in the specified directory)')
 
 output_grp = parser.add_argument_group('Output parameters')
 output_grp.add_argument('-o', '--output', help = 'CSV output filename (stdout if not specified)')
@@ -630,7 +634,103 @@ def generate_csv(fd, results, options):
 
     return
 
+
+def generate_all_csv(fd, results, options, source_file):
+    """
+        Generate a plain ';' separated csv file with the desired or default attribute format
+
+        @param fd : output file descriptor, could be a true file or stdout
+    """
+    if results:
+        spamwriter = csv.writer(fd, delimiter=options.delimiter, quoting=csv.QUOTE_ALL, lineterminator='\n')
+        
+        splitted_options_format = options.format.split('-')
+        
+        if not options.skip_header:
+            csv_header = [format_item.upper() for format_item in splitted_options_format]
+            csv_header.insert(0, "SOURCE_FILE")
+            spamwriter.writerow(csv_header)
+        
+        # for IP in sorted(results.iterkeys())
+        for IP in sorted(results):
+            formatted_attribute_list = []
+            
+            # counter to check if item has value
+            item_count = 0
+
+            for index,format_item in enumerate(splitted_options_format):
+                item = formatted_item(results[IP], format_item)
+                formatted_attribute_list.insert(index, item)
+                # add counter if the item is not empty
+                if item[0] != '':
+                    item_count = item_count + 1
+            
+            formatted_attribute_list = repeat_attributes(formatted_attribute_list)
+            
+            for line_to_write in izip(*formatted_attribute_list):
+                list_line_to_write = list(line_to_write)
+                list_line_to_write.insert(0, source_file)
+
+                # only write host with open ports
+                if item_count > 1:
+                    spamwriter.writerow(list_line_to_write)
+                    print("     " + list_line_to_write[1] + " written to the output csv")
+                else:
+                    print("     " + list_line_to_write[1] + " doesn't have any open ports")
+            # Print a newline if asked
+            if not options.no_newline:
+                spamwriter.writerow('')
+
+    return
+
+
+def process_output(results, options):
+    # This method process the generated csv.
+
+    # Output descriptor
+    if options.output != None:
+        fd_output = open(options.output, fd_write_options)
+    else:
+        # No output file specified, writing to stdout
+        fd_output = sys.stdout
+    
+    # CSV output
+    generate_csv(fd_output, results, options)
+    fd_output.close()
+
+    return
+
+
+def process_all_outputs(results, options, source_file, output_file_name):
+    # This method process the generated csv.
+
+    # Check if results is not empty
+    if results:
+        # Turn on no_newline by default
+        setattr(options, 'no_newline', True)
+        # Check if output file has been created before
+        if os.path.isfile(output_file_name) == True:
+            setattr(options, 'skip_header', True)
+        # Open output file
+        fd_output = open(output_file_name, fd_append_options)
+        
+        # CSV output
+        generate_all_csv(fd_output, results, options, source_file)
+        print("     Done processing " + source_file)
+        fd_output.close()
+    else:
+        # Results is empty
+        print("     " + source_file + " is empty")
+
+    return
+
+
 def main():
+    # Check if user supply arguments. If not, exit
+    if len(sys.argv) <= 1:
+        print("Please specify arguments or use --help to print help")
+        exit()
+
     global parser
     
     options = parser.parse_args()
@@ -645,13 +745,44 @@ def main():
          Supported objects are { fqdn, rdns, hop_number, ip, mac_address, mac_vendor, port, protocol, os, script, service, version }" % ', '.join(unknown_items))
     
     # Input selection
-    if (options.input != None) and (options.xml_input != None):
-        parser.error("Please specify either a normal/grepable or an XML input file")
+    if (options.input != None) and ((options.xml_input != None) or (options.all_files != None)):
+        # Two or more options are selected - invalid input
+        parser.error("Please specify either a normal/grepable or an XML input file or all files option")
+
+    if ((options.input != None) or (options.xml_input != None)) and (options.all_files != None):
+        # Two or more options are selected - invalid input
+        parser.error("Please specify either a normal/grepable or an XML input file or all files option")
     
-    elif (options.input == None) and (options.xml_input != None):
+    # process xml input
+    elif (options.input == None) and (options.xml_input != None) and (options.all_files == None):
         results = parse_xml(options.xml_input)
+        # Process the output
+        process_output(results, options)
     
-    elif options.xml_input == None:
+    # process all files in directory
+    elif (options.input == None) and (options.xml_input == None) and (options.all_files != None):
+        directory = os.path.abspath(options.all_files)
+        # check if there is any gnmap files in the directory
+        print("Reading all files with gnmap extention in: " + directory)
+
+        for f in os.listdir(directory):
+            if f.endswith(".gnmap"):
+                nmap_file = os.path.join(directory, f)
+                print("  Processing: " + nmap_file)
+                source_file = f.split('.gnmap')[0]
+                print("     Source file: " + source_file)
+                # Read the file content
+                fd_input = open(nmap_file, fd_read_options)
+                # analysis
+                results = parse(fd_input)
+                fd_input.close()
+                # Process the output
+                process_all_outputs(results, options, source_file, directory + "-all-output.csv")
+                
+                # process each file
+
+    # process std input or non xml input file
+    elif (options.xml_input == None) and (options.all_files == None):
         if options.input != None:
             fd_input = open(options.input, fd_read_options)
         else:
@@ -661,17 +792,8 @@ def main():
         # Analysis  
         results = parse(fd_input)
         fd_input.close()
-     
-    # Output descriptor
-    if options.output != None:
-        fd_output = open(options.output, fd_write_options)
-    else:
-        # No output file specified, writing to stdout
-        fd_output = sys.stdout
-    
-    # CSV output
-    generate_csv(fd_output, results, options)
-    fd_output.close()
+        # Process the output
+        process_output(results, options)
     
     return
 
